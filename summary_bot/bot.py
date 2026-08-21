@@ -59,15 +59,35 @@ def build_dispatcher(db, service, admin_id: int):
     async def admin_command(m: Message, action: str):
         if m.from_user.id != admin_id: return
         parts = (m.text or "").split()
-        if len(parts) != 2: return await m.answer(f"Формат: /{action} CHAT_ID")
-        chat_id = int(parts[1]); group = await db.get_group(chat_id)
+        is_group = m.chat.type in {"group", "supergroup"}
+        if len(parts) == 1 and is_group:
+            chat_id = m.chat.id
+        elif len(parts) == 2:
+            try:
+                chat_id = int(parts[1])
+            except ValueError:
+                return await m.answer(f"Формат: /{action} CHAT_ID")
+        else:
+            return await m.answer(
+                f"Выполни /{action} в нужной группе или укажи её ID: /{action} CHAT_ID"
+            )
+        group = await db.get_group(chat_id)
         if not group: return await m.answer("Группа не найдена.")
         if action == "settings": return await m.answer(f"{group['title']}\nСтатус: {group['status']}\nРежим: {group['period']}")
         if action == "pause": await db.set_status(chat_id, "paused")
         if action == "resume": await db.set_status(chat_id, "active")
         if action == "disconnect": await db.disconnect(chat_id)
         if action == "summary_now":
-            count = await service.run_group(chat_id); return await m.answer(f"Опубликовано тем: {count}")
+            if group["status"] != "active" or not group["period"]:
+                return await m.answer("Группа ещё не активирована или период не выбран.")
+            count = await service.run_group(chat_id, group["period"])
+            if count == 0:
+                labels = {"day": "24 часа", "week": "7 дней", "month": "30 дней"}
+                return await m.answer(
+                    f"За последние {labels[group['period']]} новых сообщений для сводки нет. "
+                    "Бот видит только сообщения, полученные после подключения группы."
+                )
+            return await m.answer(f"Саммари готово. Опубликовано тем: {count}")
         await m.answer("Готово.")
 
     for command in ("settings", "pause", "resume", "summary_now", "disconnect"):

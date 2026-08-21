@@ -5,11 +5,12 @@ from zoneinfo import ZoneInfo
 def period_start(period: str, now: datetime) -> datetime:
     if period == "day": return now - timedelta(days=1)
     if period == "week": return now - timedelta(days=7)
-    if period == "month":
-        first = now.replace(day=1)
-        previous_last = first - timedelta(days=1)
-        return previous_last.replace(day=1)
+    if period == "month": return now - timedelta(days=30)
     raise ValueError(period)
+
+
+def period_label(period: str) -> str:
+    return {"day": "24 часа", "week": "7 дней", "month": "30 дней"}[period]
 
 
 def is_due(period: str, now: datetime) -> bool:
@@ -35,13 +36,14 @@ class SummaryService:
         group = await self.db.get_group(chat_id)
         if not group or group["status"] != "active": return 0
         now = now or datetime.now(self.zone)
-        since = period_start(period or group["period"], now)
+        selected_period = period or group["period"]
+        since = period_start(selected_period, now)
         threads = await self.db.message_threads(chat_id, since)
         published = 0
         try:
             for thread_id, rows in threads.items():
                 text = await self.summarizer.summarize(chat_id, rows)
-                await self.bot.send_message(chat_id, "📝 <b>Главное за период</b>\n\n" + text,
+                await self.bot.send_message(chat_id, f"📝 <b>Главное за {period_label(selected_period)}</b>\n\n" + text,
                                             message_thread_id=thread_id or None)
                 published += 1
             if published:
