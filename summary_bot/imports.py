@@ -3,17 +3,13 @@ from __future__ import annotations
 import hashlib
 
 
-def import_payload(message):
-    """Return date, visible sender and text for forwarded or manually pasted content."""
+def import_metadata(message):
+    """Return original date and visible sender, including media without a caption."""
     origin = getattr(message, "forward_origin", None)
-    text = getattr(message, "text", None) or getattr(message, "caption", None)
-    if not text:
-        return None
-
     if origin is None:
         user = getattr(message, "from_user", None)
         sender = getattr(user, "full_name", None) or "Импортировано вручную"
-        return message.date, sender, text
+        return message.date, sender
 
     user = getattr(origin, "sender_user", None)
     chat = getattr(origin, "sender_chat", None) or getattr(origin, "chat", None)
@@ -24,7 +20,16 @@ def import_payload(message):
         or getattr(origin, "author_signature", None)
         or "Участник"
     )
-    return origin.date, sender, text
+    return origin.date, sender
+
+
+def import_payload(message):
+    """Return date, visible sender and text for forwarded or manually pasted content."""
+    text = getattr(message, "text", None) or getattr(message, "caption", None)
+    if not text:
+        return None
+    sent_at, sender = import_metadata(message)
+    return sent_at, sender, text
 
 
 forwarded_payload = import_payload

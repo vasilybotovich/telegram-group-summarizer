@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from summary_bot.imports import import_payload, imported_message_id
+from summary_bot.imports import import_metadata, import_payload, imported_message_id
 
 
 def test_forwarded_payload_and_stable_id():
@@ -39,3 +39,18 @@ def test_plain_text_can_be_imported_manually():
 def test_media_without_caption_is_skipped():
     message = SimpleNamespace(forward_origin=SimpleNamespace(), text=None, caption=None)
     assert import_payload(message) is None
+
+
+def test_forwarded_media_metadata_without_caption():
+    sent_at = datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc)
+    message = SimpleNamespace(
+        forward_origin=SimpleNamespace(
+            date=sent_at,
+            sender_user=SimpleNamespace(full_name="Иван Иванов"),
+            sender_chat=None,
+            chat=None,
+            sender_user_name=None,
+            author_signature=None,
+        ),
+    )
+    assert import_metadata(message) == (sent_at, "Иван Иванов")

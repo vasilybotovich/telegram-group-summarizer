@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import re
 
@@ -21,9 +22,42 @@ SYSTEM = """Ты редактор Telegram-дайджестов. Выдели т
 
 
 class Summarizer:
-    def __init__(self, api_key: str, base_url: str, model: str):
+    def __init__(
+        self, api_key: str, base_url: str, model: str,
+        asr_model: str = "qwen3-asr-flash",
+    ):
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
+        self.asr_model = asr_model
+
+    async def describe_image(self, data: bytes, mime_type: str, caption: str | None = None) -> str:
+        encoded = base64.b64encode(data).decode("ascii")
+        prompt = (
+            "Опиши изображение для последующей сводки переписки. Извлеки весь значимый "
+            "текст, факты, решения, числа и даты. Пиши кратко по-русски, не домысливай."
+        )
+        if caption:
+            prompt += f"\nПодпись пользователя: {caption}"
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
+            ]}],
+            temperature=0.1,
+            max_tokens=1200,
+        )
+        return response.choices[0].message.content.strip()
+
+    async def transcribe_audio(self, data: bytes, filename: str, mime_type: str) -> str:
+        response = await self.client.audio.transcriptions.create(
+            model=self.asr_model,
+            file=(filename, data, mime_type),
+        )
+        text = getattr(response, "text", None)
+        if not text and isinstance(response, str):
+            text = response
+        return (text or "").strip()
 
     async def summarize(self, chat_id: int, rows) -> str:
         numbered = list(enumerate(rows, start=1))

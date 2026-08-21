@@ -18,9 +18,12 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     db = Database(settings.database_path); await db.init()
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    summarizer = Summarizer(settings.dashscope_api_key, settings.dashscope_base_url, settings.qwen_model)
+    summarizer = Summarizer(
+        settings.dashscope_api_key, settings.dashscope_base_url,
+        settings.qwen_model, settings.qwen_asr_model,
+    )
     service = SummaryService(bot, db, summarizer, settings.admin_user_id, settings.tz)
-    dp = build_dispatcher(db, service, settings.admin_user_id)
+    dp = build_dispatcher(db, service, settings.admin_user_id, summarizer)
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     scheduler.add_job(service.run_due, "cron", minute=0, id="summary_due", max_instances=1)
     scheduler.start(); await set_commands(bot)

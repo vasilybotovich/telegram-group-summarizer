@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     admin_user_id: int = 127626487
     database_path: str = "/app/data/bot.db"
     qwen_model: str = "qwen3.5-flash"
+    qwen_asr_model: str = "qwen3-asr-flash"
     dashscope_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     tz: str = "Europe/Moscow"
 
