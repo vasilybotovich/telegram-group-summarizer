@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -20,6 +21,18 @@ CREATE TABLE IF NOT EXISTS messages(
   PRIMARY KEY(chat_id,message_id), FOREIGN KEY(chat_id) REFERENCES groups(chat_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS ix_messages_scope ON messages(chat_id,thread_id,sent_at);
+CREATE TABLE IF NOT EXISTS import_sessions(
+  token TEXT PRIMARY KEY, admin_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+  thread_id INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open',
+  imported_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+  FOREIGN KEY(chat_id) REFERENCES groups(chat_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_import_sessions_admin ON import_sessions(admin_id,status,created_at);
+CREATE TABLE IF NOT EXISTS import_session_messages(
+  token TEXT NOT NULL, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
+  PRIMARY KEY(token,chat_id,message_id),
+  FOREIGN KEY(token) REFERENCES import_sessions(token) ON DELETE CASCADE
+);
 """
 
 
@@ -85,6 +98,88 @@ class Database:
             await db.execute(
                 "INSERT OR IGNORE INTO messages VALUES(?,?,?,?,?,?,?)",
                 (chat_id, message_id, thread_id or 0, thread_name, sender, text, sent_at.isoformat()),
+            )
+            await db.commit()
+
+    async def create_import_session(self, admin_id: int, chat_id: int, thread_id: int) -> str:
+        token = secrets.token_urlsafe(12)
+        async with self.connect() as db:
+            await db.execute(
+                "DELETE FROM messages WHERE EXISTS ("
+                "SELECT 1 FROM import_session_messages ism "
+                "JOIN import_sessions s ON s.token=ism.token "
+                "WHERE s.admin_id=? AND s.status='open' "
+                "AND ism.chat_id=messages.chat_id AND ism.message_id=messages.message_id)",
+                (admin_id,),
+            )
+            await db.execute(
+                "DELETE FROM import_session_messages WHERE token IN ("
+                "SELECT token FROM import_sessions WHERE admin_id=? AND status='open')",
+                (admin_id,),
+            )
+            await db.execute(
+                "UPDATE import_sessions SET status='cancelled' WHERE admin_id=? AND status='open'",
+                (admin_id,),
+            )
+            await db.execute(
+                "INSERT INTO import_sessions(token,admin_id,chat_id,thread_id,created_at) VALUES(?,?,?,?,?)",
+                (token, admin_id, chat_id, thread_id or 0, datetime.utcnow().isoformat()),
+            )
+            await db.commit()
+        return token
+
+    async def get_import_session(self, token: str, admin_id: int):
+        async with self.connect() as db:
+            cur = await db.execute(
+                "SELECT * FROM import_sessions WHERE token=? AND admin_id=? AND status='open'",
+                (token, admin_id),
+            )
+            return await cur.fetchone()
+
+    async def active_import_session(self, admin_id: int):
+        async with self.connect() as db:
+            cur = await db.execute(
+                "SELECT * FROM import_sessions WHERE admin_id=? AND status='open' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (admin_id,),
+            )
+            return await cur.fetchone()
+
+    async def add_imported_message(
+        self, token, chat_id, message_id, thread_id, sender, text, sent_at
+    ) -> bool:
+        async with self.connect() as db:
+            cur = await db.execute(
+                "INSERT OR IGNORE INTO messages VALUES(?,?,?,?,?,?,?)",
+                (chat_id, message_id, thread_id or 0, None, sender, text, sent_at.isoformat()),
+            )
+            inserted = cur.rowcount > 0
+            if inserted:
+                await db.execute(
+                    "INSERT INTO import_session_messages(token,chat_id,message_id) VALUES(?,?,?)",
+                    (token, chat_id, message_id),
+                )
+                await db.execute(
+                    "UPDATE import_sessions SET imported_count=imported_count+1 "
+                    "WHERE token=? AND status='open'",
+                    (token,),
+                )
+            await db.commit()
+        return inserted
+
+    async def close_import_session(self, token: str, status: str = "completed"):
+        async with self.connect() as db:
+            if status == "cancelled":
+                await db.execute(
+                    "DELETE FROM messages WHERE EXISTS ("
+                    "SELECT 1 FROM import_session_messages ism WHERE ism.token=? "
+                    "AND ism.chat_id=messages.chat_id AND ism.message_id=messages.message_id)",
+                    (token,),
+                )
+            await db.execute("DELETE FROM import_session_messages WHERE token=?", (token,))
+            await db.execute(
+                "UPDATE import_sessions SET status=? WHERE token=? AND status='open'",
+                (status, token),
             )
             await db.commit()
 

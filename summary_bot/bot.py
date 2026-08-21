@@ -1,7 +1,12 @@
+from datetime import datetime
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.filters import Command
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from summary_bot.imports import forwarded_payload, imported_message_id
+from summary_bot.service import period_start
 
 
 def kb(chat_id: int):
@@ -19,12 +24,31 @@ def periods(chat_id: int):
     ]])
 
 
+def import_controls(token: str):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Завершить и сделать саммари", callback_data=f"import_finish:{token}"),
+        InlineKeyboardButton(text="❌ Отменить", callback_data=f"import_cancel:{token}"),
+    ]])
+
+
 def build_dispatcher(db, service, admin_id: int):
     router, dp = Router(), Dispatcher()
 
     @router.message(Command("start"))
     async def start(m: Message):
         if m.chat.type == "private" and m.from_user.id == admin_id:
+            parts = (m.text or "").split(maxsplit=1)
+            if len(parts) == 2 and parts[1].startswith("import_"):
+                token = parts[1].removeprefix("import_")
+                session = await db.get_import_session(token, admin_id)
+                if not session:
+                    return await m.answer("Сессия импорта не найдена или уже завершена.")
+                group = await db.get_group(session["chat_id"])
+                return await m.answer(
+                    f"Перешли сюда старые сообщения для группы «{group['title']}». "
+                    "Можно выделить и переслать сразу несколько. Затем нажми кнопку ниже.",
+                    reply_markup=import_controls(token),
+                )
             await m.answer("Готов к работе. Запросы на подключение групп будут приходить сюда.")
 
     @router.my_chat_member()
@@ -90,6 +114,70 @@ def build_dispatcher(db, service, admin_id: int):
             return await m.answer(f"Саммари готово. Опубликовано тем: {count}")
         await m.answer("Готово.")
 
+    @router.message(Command("import_history"))
+    async def import_history(m: Message):
+        if m.from_user.id != admin_id: return
+        if m.chat.type not in {"group", "supergroup"}:
+            return await m.answer("Запусти эту команду внутри нужной группы и темы.")
+        group = await db.get_group(m.chat.id)
+        if not group or group["status"] != "active" or not group["period"]:
+            return await m.answer("Сначала подключи группу и выбери период саммари.")
+        token = await db.create_import_session(admin_id, m.chat.id, m.message_thread_id or 0)
+        me = await m.bot.get_me()
+        url = f"https://t.me/{me.username}?start=import_{token}"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📥 Переслать старые сообщения", url=url)
+        ]])
+        await m.answer(
+            "Импорт привязан к этой группе и теме. Открой личный чат по кнопке и перешли сообщения.",
+            reply_markup=keyboard,
+        )
+
+    @router.message(F.chat.type == "private")
+    async def collect_import(m: Message):
+        if m.from_user.id != admin_id: return
+        session = await db.active_import_session(admin_id)
+        if not session: return
+        payload = forwarded_payload(m)
+        if not payload:
+            return await m.answer("Нужно переслать текстовое сообщение или сообщение с подписью.")
+        sent_at, sender, text = payload
+        group = await db.get_group(session["chat_id"])
+        now = datetime.now(sent_at.tzinfo) if sent_at.tzinfo else datetime.now()
+        if sent_at < period_start(group["period"], now):
+            return
+        message_id = imported_message_id(session["chat_id"], sent_at, sender, text)
+        await db.add_imported_message(
+            session["token"], session["chat_id"], message_id, session["thread_id"],
+            sender, text, sent_at,
+        )
+
+    @router.callback_query(F.data.startswith("import_cancel:"))
+    async def cancel_import(c: CallbackQuery):
+        if c.from_user.id != admin_id: return await c.answer("Недоступно", show_alert=True)
+        token = c.data.split(":", 1)[1]
+        session = await db.get_import_session(token, admin_id)
+        if not session: return await c.answer("Сессия уже закрыта", show_alert=True)
+        await db.close_import_session(token, "cancelled")
+        await c.message.edit_text("Импорт отменён."); await c.answer()
+
+    @router.callback_query(F.data.startswith("import_finish:"))
+    async def finish_import(c: CallbackQuery):
+        if c.from_user.id != admin_id: return await c.answer("Недоступно", show_alert=True)
+        token = c.data.split(":", 1)[1]
+        session = await db.get_import_session(token, admin_id)
+        if not session: return await c.answer("Сессия уже закрыта", show_alert=True)
+        group = await db.get_group(session["chat_id"])
+        await c.message.edit_text(
+            f"Принято сообщений: {session['imported_count']}. Создаю саммари для «{group['title']}»…"
+        )
+        count = await service.run_group(session["chat_id"], group["period"])
+        await db.close_import_session(token)
+        await c.message.edit_text(
+            f"Импорт завершён. Принято сообщений: {session['imported_count']}. Опубликовано тем: {count}."
+        )
+        await c.answer()
+
     for command in ("settings", "pause", "resume", "summary_now", "disconnect"):
         router.message.register(lambda m, a=command: admin_command(m, a), Command(command))
 
@@ -108,4 +196,5 @@ def build_dispatcher(db, service, admin_id: int):
 async def set_commands(bot: Bot):
     await bot.set_my_commands([BotCommand(command=x, description=d) for x,d in [
         ("settings","Настройки группы"),("pause","Приостановить"),("resume","Возобновить"),
-        ("summary_now","Саммари сейчас"),("disconnect","Отключить группу")]])
+        ("summary_now","Саммари сейчас"),("import_history","Импорт старых сообщений"),
+        ("disconnect","Отключить группу")]])
