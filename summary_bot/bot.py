@@ -5,7 +5,7 @@ from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.filters import Command
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from summary_bot.imports import forwarded_payload, imported_message_id
+from summary_bot.imports import import_payload, imported_message_id
 from summary_bot.service import period_start
 
 
@@ -33,6 +33,8 @@ def import_controls(token: str):
 
 def build_dispatcher(db, service, admin_id: int):
     router, dp = Router(), Dispatcher()
+    warned_empty_imports: set[str] = set()
+    warned_old_imports: set[str] = set()
 
     @router.message(Command("start"))
     async def start(m: Message):
@@ -45,8 +47,12 @@ def build_dispatcher(db, service, admin_id: int):
                     return await m.answer("Сессия импорта не найдена или уже завершена.")
                 group = await db.get_group(session["chat_id"])
                 return await m.answer(
-                    f"Перешли сюда старые сообщения для группы «{group['title']}». "
-                    "Можно выделить и переслать сразу несколько. Затем нажми кнопку ниже.",
+                    f"Импорт для группы «{group['title']}» открыт.\n\n"
+                    "1. Вернись в нужную тему группы.\n"
+                    "2. Выдели старые сообщения и перешли их сюда. Можно сразу несколько.\n"
+                    "3. Вернись сюда и нажми «Завершить и сделать саммари».\n\n"
+                    "Бот принимает пересланный или вставленный текст и подписи к медиа. "
+                    "Фото и видео без подписи анализировать невозможно.",
                     reply_markup=import_controls(token),
                 )
             await m.answer("Готов к работе. Запросы на подключение групп будут приходить сюда.")
@@ -138,19 +144,38 @@ def build_dispatcher(db, service, admin_id: int):
         if m.from_user.id != admin_id: return
         session = await db.active_import_session(admin_id)
         if not session: return
-        payload = forwarded_payload(m)
+        payload = import_payload(m)
         if not payload:
-            return await m.answer("Нужно переслать текстовое сообщение или сообщение с подписью.")
+            if session["token"] not in warned_empty_imports:
+                warned_empty_imports.add(session["token"])
+                return await m.answer(
+                    "Это фото, видео или файл без подписи — текста для анализа в нём нет, "
+                    "поэтому я его пропустил. Продолжай пересылать остальные сообщения."
+                )
+            return
         sent_at, sender, text = payload
         group = await db.get_group(session["chat_id"])
         now = datetime.now(sent_at.tzinfo) if sent_at.tzinfo else datetime.now()
         if sent_at < period_start(group["period"], now):
+            if session["token"] not in warned_old_imports:
+                warned_old_imports.add(session["token"])
+                labels = {"day": "24 часов", "week": "7 дней", "month": "30 дней"}
+                return await m.answer(
+                    f"Сообщения старше {labels[group['period']]} пропускаются согласно настройкам группы. "
+                    "Продолжай пересылать более новые сообщения."
+                )
             return
         message_id = imported_message_id(session["chat_id"], sent_at, sender, text)
-        await db.add_imported_message(
+        inserted = await db.add_imported_message(
             session["token"], session["chat_id"], message_id, session["thread_id"],
             sender, text, sent_at,
         )
+        if inserted and session["imported_count"] == 0:
+            await m.answer(
+                "✅ Первое сообщение принято. Продолжай пересылать остальные, а когда закончишь — "
+                "нажми кнопку ниже.",
+                reply_markup=import_controls(session["token"]),
+            )
 
     @router.callback_query(F.data.startswith("import_cancel:"))
     async def cancel_import(c: CallbackQuery):
@@ -159,6 +184,7 @@ def build_dispatcher(db, service, admin_id: int):
         session = await db.get_import_session(token, admin_id)
         if not session: return await c.answer("Сессия уже закрыта", show_alert=True)
         await db.close_import_session(token, "cancelled")
+        warned_empty_imports.discard(token); warned_old_imports.discard(token)
         await c.message.edit_text("Импорт отменён."); await c.answer()
 
     @router.callback_query(F.data.startswith("import_finish:"))
@@ -173,6 +199,7 @@ def build_dispatcher(db, service, admin_id: int):
         )
         count = await service.run_group(session["chat_id"], group["period"])
         await db.close_import_session(token)
+        warned_empty_imports.discard(token); warned_old_imports.discard(token)
         await c.message.edit_text(
             f"Импорт завершён. Принято сообщений: {session['imported_count']}. Опубликовано тем: {count}."
         )

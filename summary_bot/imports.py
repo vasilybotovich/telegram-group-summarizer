@@ -3,12 +3,17 @@ from __future__ import annotations
 import hashlib
 
 
-def forwarded_payload(message):
-    """Return original date, visible sender and text for a forwarded message."""
+def import_payload(message):
+    """Return date, visible sender and text for forwarded or manually pasted content."""
     origin = getattr(message, "forward_origin", None)
     text = getattr(message, "text", None) or getattr(message, "caption", None)
-    if origin is None or not text:
+    if not text:
         return None
+
+    if origin is None:
+        user = getattr(message, "from_user", None)
+        sender = getattr(user, "full_name", None) or "Импортировано вручную"
+        return message.date, sender, text
 
     user = getattr(origin, "sender_user", None)
     chat = getattr(origin, "sender_chat", None) or getattr(origin, "chat", None)
@@ -20,6 +25,9 @@ def forwarded_payload(message):
         or "Участник"
     )
     return origin.date, sender, text
+
+
+forwarded_payload = import_payload
 
 
 def imported_message_id(chat_id: int, sent_at, sender: str, text: str) -> int:

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from summary_bot.imports import forwarded_payload, imported_message_id
+from summary_bot.imports import import_payload, imported_message_id
 
 
 def test_forwarded_payload_and_stable_id():
@@ -18,12 +18,24 @@ def test_forwarded_payload_and_stable_id():
         text="Согласовали запуск",
         caption=None,
     )
-    assert forwarded_payload(message) == (sent_at, "Иван Иванов", "Согласовали запуск")
+    assert import_payload(message) == (sent_at, "Иван Иванов", "Согласовали запуск")
     first = imported_message_id(-100123, sent_at, "Иван Иванов", "Согласовали запуск")
     second = imported_message_id(-100123, sent_at, "Иван Иванов", "Согласовали запуск")
     assert first == second and first < 0
 
 
-def test_non_forwarded_message_is_rejected():
-    message = SimpleNamespace(forward_origin=None, text="Обычное сообщение", caption=None)
-    assert forwarded_payload(message) is None
+def test_plain_text_can_be_imported_manually():
+    sent_at = datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc)
+    message = SimpleNamespace(
+        forward_origin=None,
+        text="Вставленный текст",
+        caption=None,
+        date=sent_at,
+        from_user=SimpleNamespace(full_name="Сергей"),
+    )
+    assert import_payload(message) == (sent_at, "Сергей", "Вставленный текст")
+
+
+def test_media_without_caption_is_skipped():
+    message = SimpleNamespace(forward_origin=SimpleNamespace(), text=None, caption=None)
+    assert import_payload(message) is None
