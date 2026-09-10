@@ -2,6 +2,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from summary_bot.service import is_due, period_label, period_start
+from summary_bot.service import SummaryService
+
+import pytest
 
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -23,3 +26,32 @@ def test_period_windows():
     assert period_label("day") == "24 часа"
     assert period_label("week") == "7 дней"
     assert period_label("month") == "30 дней"
+
+
+@pytest.mark.asyncio
+async def test_failed_thread_does_not_block_other_threads(monkeypatch):
+    class Bot:
+        def __init__(self): self.sent = []
+        async def send_message(self, chat_id, text, **kwargs):
+            self.sent.append((chat_id, text, kwargs))
+
+    class DB:
+        def __init__(self): self.finished = []
+        async def get_group(self, _):
+            return {"chat_id": -100123, "title": "Test", "status": "active", "period": "day"}
+        async def message_threads(self, *_): return {1: ["bad"], 2: ["good"]}
+        async def finish_thread(self, chat_id, thread_id, through):
+            self.finished.append((chat_id, thread_id))
+
+    class Summarizer:
+        async def summarize(self, _, rows):
+            if rows == ["bad"]: raise TimeoutError()
+            return "готово"
+
+    async def no_sleep(_): pass
+    monkeypatch.setattr("summary_bot.errors.asyncio.sleep", no_sleep)
+    bot, db = Bot(), DB()
+    service = SummaryService(bot, db, Summarizer(), 7)
+    assert await service.run_group(-100123) == 1
+    assert db.finished == [(-100123, 2)]
+    assert any(chat_id == 7 and "сообщения сохранены" in text for chat_id, text, _ in bot.sent)

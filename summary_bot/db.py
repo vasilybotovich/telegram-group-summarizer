@@ -201,6 +201,14 @@ class Database:
             await db.execute("UPDATE groups SET last_summary_at=? WHERE chat_id=?", (through.isoformat(), chat_id))
             await db.commit()
 
+    async def finish_thread(self, chat_id: int, thread_id: int, through: datetime):
+        async with self.connect() as db:
+            await db.execute(
+                "DELETE FROM messages WHERE chat_id=? AND thread_id=? AND sent_at<=?",
+                (chat_id, thread_id or 0, through.isoformat()),
+            )
+            await db.commit()
+
     async def disconnect(self, chat_id: int):
         async with self.connect() as db:
             await db.execute("DELETE FROM groups WHERE chat_id=?", (chat_id,))

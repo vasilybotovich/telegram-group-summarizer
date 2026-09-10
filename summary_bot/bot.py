@@ -6,6 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from summary_bot.imports import import_metadata, import_payload, imported_message_id
+from summary_bot.errors import ErrorReporter, retry
 from summary_bot.service import period_start
 
 
@@ -35,6 +36,7 @@ def build_dispatcher(db, service, admin_id: int, media=None):
     router, dp = Router(), Dispatcher()
     warned_empty_imports: set[str] = set()
     warned_old_imports: set[str] = set()
+    reporter = ErrorReporter(service.bot, admin_id)
 
     @router.message(Command("start"))
     async def start(m: Message):
@@ -218,41 +220,47 @@ def build_dispatcher(db, service, admin_id: int, media=None):
         router.message.register(lambda m, a=command: admin_command(m, a), Command(command))
 
     async def media_text(m: Message) -> str | None:
+        kind = "медиафайл"
         try:
             if m.photo:
-                data = await m.bot.download(m.photo[-1])
-                description = await media.describe_image(data.read(), "image/jpeg", m.caption)
+                kind = "изображение"
+                async def process_photo():
+                    data = await m.bot.download(m.photo[-1])
+                    return await media.describe_image(data.read(), "image/jpeg", m.caption)
+                description = await retry(process_photo)
                 return f"[Изображение] {description}" if description else None
             document = m.document
             if document and (document.mime_type or "").startswith("image/"):
-                data = await m.bot.download(document)
-                description = await media.describe_image(
-                    data.read(), document.mime_type or "image/jpeg", m.caption,
-                )
+                kind = "изображение"
+                async def process_document():
+                    data = await m.bot.download(document)
+                    return await media.describe_image(
+                        data.read(), document.mime_type or "image/jpeg", m.caption,
+                    )
+                description = await retry(process_document)
                 return f"[Изображение] {description}" if description else None
             audio = m.voice or m.audio
             if audio:
+                kind = "аудиозапись"
                 if (audio.file_size or 0) > 10 * 1024 * 1024 or (audio.duration or 0) > 300:
                     return "[Аудиозапись длиннее 5 минут — автоматическая расшифровка пропущена]"
-                data = await m.bot.download(audio)
                 filename = getattr(audio, "file_name", None) or (
                     "voice.ogg" if m.voice else "audio.mp3"
                 )
                 mime_type = getattr(audio, "mime_type", None) or (
                     "audio/ogg" if m.voice else "audio/mpeg"
                 )
-                transcript = await media.transcribe_audio(data.read(), filename, mime_type)
+                async def process_audio():
+                    data = await m.bot.download(audio)
+                    return await media.transcribe_audio(data.read(), filename, mime_type)
+                transcript = await retry(process_audio)
                 prefix = f"Подпись: {m.caption}\n" if m.caption else ""
                 return f"[Расшифровка аудио] {prefix}{transcript}" if transcript else None
-        except Exception:
+        except Exception as exc:
             import logging
             logging.exception("Failed to process Telegram media")
             try:
-                await m.bot.send_message(
-                    admin_id,
-                    "Не удалось обработать медиа. Это сообщение пропущено; "
-                    "остальная переписка продолжает собираться.",
-                )
+                await reporter.media(m, kind, exc)
             except Exception:
                 pass
         return None
