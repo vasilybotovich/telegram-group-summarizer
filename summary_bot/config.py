@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     qwen_model: str = "qwen3.5-flash"
     qwen_asr_model: str = "qwen3-asr-flash"
     dashscope_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    excluded_thread_ids: str = ""
     tz: str = "Europe/Moscow"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

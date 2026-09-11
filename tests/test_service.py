@@ -57,3 +57,24 @@ async def test_failed_thread_does_not_block_other_threads(monkeypatch):
     assert any(chat_id == 7 and "сообщения сохранены" in text for chat_id, text, _ in bot.sent)
     assert any("Сообщение от бота-суммаризатора" in text for _, text, _ in bot.sent)
     assert any("Автоматическая сводка переписки" in text for _, text, _ in bot.sent)
+
+
+@pytest.mark.asyncio
+async def test_excluded_thread_is_not_published():
+    class Bot:
+        def __init__(self): self.sent = []
+        async def send_message(self, chat_id, text, **kwargs): self.sent.append(text)
+
+    class DB:
+        async def get_group(self, _):
+            return {"chat_id": -100123, "title": "Test", "status": "active", "period": "week"}
+        async def message_threads(self, *_): return {2449: ["note"]}
+        async def finish_thread(self, *_): raise AssertionError("excluded topic must remain untouched")
+
+    class Summarizer:
+        async def summarize(self, *_): raise AssertionError("excluded topic must not be summarized")
+
+    bot = Bot()
+    service = SummaryService(bot, DB(), Summarizer(), 7, excluded_thread_ids={2449})
+    assert await service.run_group(-100123) == 0
+    assert bot.sent == []

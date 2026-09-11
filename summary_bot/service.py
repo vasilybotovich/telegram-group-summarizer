@@ -24,9 +24,13 @@ def is_due(period: str, now: datetime) -> bool:
 
 
 class SummaryService:
-    def __init__(self, bot, db, summarizer, admin_id: int, tz="Europe/Moscow"):
+    def __init__(
+        self, bot, db, summarizer, admin_id: int, tz="Europe/Moscow",
+        excluded_thread_ids: set[int] | None = None,
+    ):
         self.bot, self.db, self.summarizer, self.admin_id = bot, db, summarizer, admin_id
         self.zone = ZoneInfo(tz)
+        self.excluded_thread_ids = excluded_thread_ids or set()
         self.reporter = ErrorReporter(bot, admin_id)
 
     async def run_due(self):
@@ -48,6 +52,8 @@ class SummaryService:
         threads = await self.db.message_threads(chat_id, since)
         published = 0
         for thread_id, rows in threads.items():
+            if thread_id in self.excluded_thread_ids:
+                continue
             try:
                 async def publish():
                     text = await self.summarizer.summarize(chat_id, rows)

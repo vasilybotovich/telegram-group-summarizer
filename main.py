@@ -22,7 +22,12 @@ async def main():
         settings.dashscope_api_key, settings.dashscope_base_url,
         settings.qwen_model, settings.qwen_asr_model,
     )
-    service = SummaryService(bot, db, summarizer, settings.admin_user_id, settings.tz)
+    excluded_thread_ids = {
+        int(value.strip()) for value in settings.excluded_thread_ids.split(",") if value.strip()
+    }
+    service = SummaryService(
+        bot, db, summarizer, settings.admin_user_id, settings.tz, excluded_thread_ids,
+    )
     dp = build_dispatcher(db, service, settings.admin_user_id, summarizer)
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     scheduler.add_job(service.run_due, "cron", minute=0, id="summary_due", max_instances=1)
