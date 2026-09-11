@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from summary_bot.imports import import_metadata, import_payload, imported_message_id
-from summary_bot.errors import ErrorReporter, retry
+from summary_bot.errors import EmptyProviderResponse, ErrorReporter, retry
 from summary_bot.service import period_start
 
 
@@ -221,24 +221,35 @@ def build_dispatcher(db, service, admin_id: int, media=None):
 
     async def media_text(m: Message) -> str | None:
         kind = "медиафайл"
+        stage = "обработать медиафайл"
         try:
             if m.photo:
                 kind = "изображение"
-                async def process_photo():
-                    data = await m.bot.download(m.photo[-1])
+                stage = "скачать изображение из Telegram"
+                data = await retry(lambda: m.bot.download(m.photo[-1]))
+                stage = "распознать изображение с помощью AI"
+                async def describe_photo():
+                    data.seek(0)
                     return await media.describe_image(data.read(), "image/jpeg", m.caption)
-                description = await retry(process_photo)
-                return f"[Изображение] {description}" if description else None
+                description = await retry(describe_photo)
+                if not description:
+                    raise EmptyProviderResponse()
+                return f"[Изображение] {description}"
             document = m.document
             if document and (document.mime_type or "").startswith("image/"):
                 kind = "изображение"
-                async def process_document():
-                    data = await m.bot.download(document)
+                stage = "скачать файл изображения из Telegram"
+                data = await retry(lambda: m.bot.download(document))
+                stage = "распознать изображение с помощью AI"
+                async def describe_document():
+                    data.seek(0)
                     return await media.describe_image(
                         data.read(), document.mime_type or "image/jpeg", m.caption,
                     )
-                description = await retry(process_document)
-                return f"[Изображение] {description}" if description else None
+                description = await retry(describe_document)
+                if not description:
+                    raise EmptyProviderResponse()
+                return f"[Изображение] {description}"
             audio = m.voice or m.audio
             if audio:
                 kind = "аудиозапись"
@@ -250,17 +261,22 @@ def build_dispatcher(db, service, admin_id: int, media=None):
                 mime_type = getattr(audio, "mime_type", None) or (
                     "audio/ogg" if m.voice else "audio/mpeg"
                 )
-                async def process_audio():
-                    data = await m.bot.download(audio)
+                stage = "скачать аудиозапись из Telegram"
+                data = await retry(lambda: m.bot.download(audio))
+                stage = "расшифровать аудиозапись с помощью AI"
+                async def transcribe():
+                    data.seek(0)
                     return await media.transcribe_audio(data.read(), filename, mime_type)
-                transcript = await retry(process_audio)
+                transcript = await retry(transcribe)
+                if not transcript:
+                    raise EmptyProviderResponse()
                 prefix = f"Подпись: {m.caption}\n" if m.caption else ""
                 return f"[Расшифровка аудио] {prefix}{transcript}" if transcript else None
         except Exception as exc:
             import logging
             logging.exception("Failed to process Telegram media")
             try:
-                await reporter.media(m, kind, exc)
+                await reporter.media(m, kind, stage, exc)
             except Exception:
                 pass
         return None
