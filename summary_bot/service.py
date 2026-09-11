@@ -52,7 +52,9 @@ class SummaryService:
                 async def publish():
                     text = await self.summarizer.summarize(chat_id, rows)
                     await self.bot.send_message(
-                        chat_id, f"📝 <b>Главное за {period_label(selected_period)}</b>\n\n" + text,
+                        chat_id,
+                        "📝 <b>Автоматическая сводка переписки</b>\n"
+                        f"Главное за {period_label(selected_period)} в этой теме:\n\n" + text,
                         message_thread_id=thread_id or None,
                     )
                 await retry(publish)

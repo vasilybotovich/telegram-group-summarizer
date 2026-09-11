@@ -55,3 +55,5 @@ async def test_failed_thread_does_not_block_other_threads(monkeypatch):
     assert await service.run_group(-100123) == 1
     assert db.finished == [(-100123, 2)]
     assert any(chat_id == 7 and "сообщения сохранены" in text for chat_id, text, _ in bot.sent)
+    assert any("Сообщение от бота-суммаризатора" in text for _, text, _ in bot.sent)
+    assert any("Автоматическая сводка переписки" in text for _, text, _ in bot.sent)
