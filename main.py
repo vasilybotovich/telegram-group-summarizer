@@ -19,8 +19,7 @@ async def main():
     db = Database(settings.database_path); await db.init()
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     summarizer = Summarizer(
-        settings.dashscope_api_key, settings.dashscope_base_url,
-        settings.qwen_model, settings.qwen_asr_model,
+        settings.dashscope_api_key, settings.dashscope_base_url, settings.qwen_model,
     )
     excluded_thread_ids = {
         int(value.strip()) for value in settings.excluded_thread_ids.split(",") if value.strip()
@@ -28,7 +27,7 @@ async def main():
     service = SummaryService(
         bot, db, summarizer, settings.admin_user_id, settings.tz, excluded_thread_ids,
     )
-    dp = build_dispatcher(db, service, settings.admin_user_id, summarizer)
+    dp = build_dispatcher(db, service, settings.admin_user_id)
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     scheduler.add_job(service.run_due, "cron", minute=0, id="summary_due", max_instances=1)
     scheduler.start(); await set_commands(bot)

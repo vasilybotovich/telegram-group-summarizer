@@ -5,17 +5,6 @@ Ensure operational failures are understandable, actionable, and contained withou
 
 ## Requirements
 
-### Requirement: Contextual notifications
-The system SHALL describe the affected group, topic or message, media type and available filename, exact failed operation, human-readable cause, impact, required action, and source link when available. It MUST distinguish Telegram download failures from AI image-analysis and audio-transcription failures, MUST report empty provider responses, and MUST NOT expose credentials or raw secret-bearing payloads.
-
-#### Scenario: Media processing fails
-- **WHEN** a supported media item cannot be downloaded or processed after retries
-- **THEN** the administrator receives a warning identifying the item, failed operation, understandable cause, impact, recovery action, and source message while confirming that other messages continue to be collected
-
-#### Scenario: Provider returns no usable result
-- **WHEN** image analysis or audio transcription returns an empty response
-- **THEN** the administrator is told that the provider returned an empty result and that the media was not included in the summary
-
 ### Requirement: Failure isolation
 The system SHALL continue processing unrelated topics and groups after a local failure.
 
@@ -29,3 +18,14 @@ The system SHALL retry transient operations and suppress repeated equivalent ale
 #### Scenario: Temporary provider failure
 - **WHEN** an AI provider succeeds during an automatic retry
 - **THEN** no administrator warning is sent
+
+### Requirement: Summary failure notifications
+The system SHALL describe the affected group or topic, failed summary operation, human-readable cause, impact, and required action. It MUST NOT expose credentials or raw secret-bearing payloads. Skipped attachments MUST NOT produce failure notifications.
+
+#### Scenario: Summary generation fails
+- **WHEN** a topic summary cannot be generated after retries
+- **THEN** the administrator receives a warning identifying the group or topic, understandable cause, impact, and recovery behavior
+
+#### Scenario: Attachment is skipped
+- **WHEN** a message has no textual content and is skipped
+- **THEN** the administrator receives no failure notification

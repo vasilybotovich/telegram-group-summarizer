@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from summary_bot.imports import import_metadata, import_payload, imported_message_id
+from summary_bot.imports import import_metadata, import_payload, imported_message_id, message_text
 
 
 def test_forwarded_payload_and_stable_id():
@@ -54,3 +54,26 @@ def test_forwarded_media_metadata_without_caption():
         ),
     )
     assert import_metadata(message) == (sent_at, "Иван Иванов")
+
+
+def test_attachment_without_text_is_ignored_without_inspection():
+    message = SimpleNamespace(
+        text=None,
+        caption=None,
+        photo=[object()],
+        voice=object(),
+        audio=object(),
+        video=object(),
+        document=object(),
+    )
+    assert message_text(message) is None
+
+
+def test_only_attachment_caption_is_collected():
+    message = SimpleNamespace(text=None, caption="Описание вложения", photo=[object()])
+    assert message_text(message) == "Описание вложения"
+
+
+def test_whitespace_only_text_is_ignored():
+    message = SimpleNamespace(text="   ", caption=None)
+    assert message_text(message) is None

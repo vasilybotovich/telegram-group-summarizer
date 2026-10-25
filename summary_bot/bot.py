@@ -5,8 +5,7 @@ from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.filters import Command
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from summary_bot.imports import import_metadata, import_payload, imported_message_id
-from summary_bot.errors import EmptyProviderResponse, ErrorReporter, retry
+from summary_bot.imports import import_payload, imported_message_id, message_text
 from summary_bot.service import period_start
 
 
@@ -32,11 +31,10 @@ def import_controls(token: str):
     ]])
 
 
-def build_dispatcher(db, service, admin_id: int, media=None):
+def build_dispatcher(db, service, admin_id: int):
     router, dp = Router(), Dispatcher()
     warned_empty_imports: set[str] = set()
     warned_old_imports: set[str] = set()
-    reporter = ErrorReporter(service.bot, admin_id)
 
     @router.message(Command("start"))
     async def start(m: Message):
@@ -53,8 +51,8 @@ def build_dispatcher(db, service, admin_id: int, media=None):
                     "1. Вернись в нужную тему группы.\n"
                     "2. Выдели старые сообщения и перешли их сюда. Можно сразу несколько.\n"
                     "3. Вернись сюда и нажми «Завершить и сделать саммари».\n\n"
-                    "Бот принимает текст, фотографии, голосовые сообщения и аудиофайлы. "
-                    "Изображения распознаются, аудио переводится в текст.",
+                    "Бот принимает только текст сообщений и текстовые подписи. "
+                    "Вложения не скачиваются и не обрабатываются.",
                     reply_markup=import_controls(token),
                 )
             await m.answer("Готов к работе. Запросы на подключение групп будут приходить сюда.")
@@ -146,22 +144,13 @@ def build_dispatcher(db, service, admin_id: int, media=None):
         if m.from_user.id != admin_id: return
         session = await db.active_import_session(admin_id)
         if not session: return
-        is_supported_media = bool(
-            m.photo or m.voice or m.audio
-            or (m.document and (m.document.mime_type or "").startswith("image/"))
-        )
-        payload = None if is_supported_media else import_payload(m)
-        if is_supported_media and media:
-            sent_at, sender = import_metadata(m)
-            text = await media_text(m)
-            if text:
-                payload = sent_at, sender, text
+        payload = import_payload(m)
         if not payload:
             if session["token"] not in warned_empty_imports:
                 warned_empty_imports.add(session["token"])
                 return await m.answer(
-                    "Этот тип сообщения пока не поддерживается. Пришли текст, фотографию, "
-                    "голосовое сообщение или аудиофайл."
+                    "Это сообщение не содержит текста. Пришли текстовое сообщение или "
+                    "добавь текстовую подпись к вложению. Само вложение бот не обрабатывает."
                 )
             return
         sent_at, sender, text = payload
@@ -219,78 +208,11 @@ def build_dispatcher(db, service, admin_id: int, media=None):
     for command in ("settings", "pause", "resume", "summary_now", "disconnect"):
         router.message.register(lambda m, a=command: admin_command(m, a), Command(command))
 
-    async def media_text(m: Message) -> str | None:
-        kind = "медиафайл"
-        stage = "обработать медиафайл"
-        try:
-            if m.photo:
-                kind = "изображение"
-                stage = "скачать изображение из Telegram"
-                data = await retry(lambda: m.bot.download(m.photo[-1]))
-                stage = "распознать изображение с помощью AI"
-                async def describe_photo():
-                    data.seek(0)
-                    return await media.describe_image(data.read(), "image/jpeg", m.caption)
-                description = await retry(describe_photo)
-                if not description:
-                    raise EmptyProviderResponse()
-                return f"[Изображение] {description}"
-            document = m.document
-            if document and (document.mime_type or "").startswith("image/"):
-                kind = "изображение"
-                stage = "скачать файл изображения из Telegram"
-                data = await retry(lambda: m.bot.download(document))
-                stage = "распознать изображение с помощью AI"
-                async def describe_document():
-                    data.seek(0)
-                    return await media.describe_image(
-                        data.read(), document.mime_type or "image/jpeg", m.caption,
-                    )
-                description = await retry(describe_document)
-                if not description:
-                    raise EmptyProviderResponse()
-                return f"[Изображение] {description}"
-            audio = m.voice or m.audio
-            if audio:
-                kind = "аудиозапись"
-                if (audio.file_size or 0) > 10 * 1024 * 1024 or (audio.duration or 0) > 300:
-                    return "[Аудиозапись длиннее 5 минут — автоматическая расшифровка пропущена]"
-                filename = getattr(audio, "file_name", None) or (
-                    "voice.ogg" if m.voice else "audio.mp3"
-                )
-                mime_type = getattr(audio, "mime_type", None) or (
-                    "audio/ogg" if m.voice else "audio/mpeg"
-                )
-                stage = "скачать аудиозапись из Telegram"
-                data = await retry(lambda: m.bot.download(audio))
-                stage = "расшифровать аудиозапись с помощью AI"
-                async def transcribe():
-                    data.seek(0)
-                    return await media.transcribe_audio(data.read(), filename, mime_type)
-                transcript = await retry(transcribe)
-                if not transcript:
-                    raise EmptyProviderResponse()
-                prefix = f"Подпись: {m.caption}\n" if m.caption else ""
-                return f"[Расшифровка аудио] {prefix}{transcript}" if transcript else None
-        except Exception as exc:
-            import logging
-            logging.exception("Failed to process Telegram media")
-            try:
-                await reporter.media(m, kind, stage, exc)
-            except Exception:
-                pass
-        return None
-
     @router.message(F.chat.type.in_({"group", "supergroup"}))
     async def collect(m: Message):
         group = await db.get_group(m.chat.id)
         if not group or group["status"] != "active" or not m.from_user or m.from_user.is_bot: return
-        text = m.text or m.caption
-        if media and (
-            m.photo or m.voice or m.audio
-            or (m.document and (m.document.mime_type or "").startswith("image/"))
-        ):
-            text = await media_text(m)
+        text = message_text(m)
         if not text:
             return
         thread_name = m.reply_to_message.forum_topic_created.name if m.reply_to_message and m.reply_to_message.forum_topic_created else None

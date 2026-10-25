@@ -4,7 +4,7 @@ import hashlib
 
 
 def import_metadata(message):
-    """Return original date and visible sender, including media without a caption."""
+    """Return original date and visible sender for imported text."""
     origin = getattr(message, "forward_origin", None)
     if origin is None:
         user = getattr(message, "from_user", None)
@@ -23,9 +23,15 @@ def import_metadata(message):
     return origin.date, sender
 
 
+def message_text(message) -> str | None:
+    """Return explicit Telegram text without inspecting an attachment."""
+    text = getattr(message, "text", None) or getattr(message, "caption", None)
+    return text if isinstance(text, str) and text.strip() else None
+
+
 def import_payload(message):
     """Return date, visible sender and text for forwarded or manually pasted content."""
-    text = getattr(message, "text", None) or getattr(message, "caption", None)
+    text = message_text(message)
     if not text:
         return None
     sent_at, sender = import_metadata(message)
